@@ -1,5 +1,5 @@
-$ErrorActionPreference = 'Stop'
 param([Parameter(Mandatory=$true)][string]$SteamKitRoot)
+$ErrorActionPreference = 'Stop'
 $native = Join-Path $SteamKitRoot 'Resources/NetHook2/NetHook2'
 $loggerPath = Join-Path $native 'logger.cpp'
 $injectorPath = Join-Path $native 'injector.cpp'

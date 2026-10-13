@@ -124,7 +124,7 @@ internal sealed class OverlayForm : Form
             var startInfo = new ProcessStartInfo
             {
                 FileName = Path.Combine(Environment.SystemDirectory, "rundll32.exe"),
-                Arguments = $"\\"{dllPath}\\",Inject window={Handle.ToInt64()}",
+                Arguments = $"\"{dllPath}\",Inject window={Handle.ToInt64()}",
                 UseShellExecute = true,
                 Verb = "runas",
                 WindowStyle = ProcessWindowStyle.Hidden

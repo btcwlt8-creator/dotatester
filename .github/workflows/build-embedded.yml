@@ -35,6 +35,9 @@ jobs:
         working-directory: third_party/SteamKit/Resources/NetHook2
         run: ./SetupDependencies.ps1
 
+      - name: Add MSBuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
       - name: Build NetHook2 x64
         shell: pwsh
         run: |

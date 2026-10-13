@@ -59,21 +59,28 @@ jobs:
       - name: Build NetHook2 x64
         shell: pwsh
         run: |
-          # Build from a SUBST drive so MSVC/vcpkg/CMake never see the long GitHub workspace path.
-          if (Test-Path R:\) { subst R: /d }
-          subst R: $env:GITHUB_WORKSPACE
-          if ($LASTEXITCODE -ne 0) { throw "Failed to map workspace to R:" }
-          Set-Location R:\
-          $env:VCPKG_OVERLAY_TRIPLETS = 'R:\build\vcpkg-triplets'
-          $shortVcpkgInstall = 'R:\vcpkg_installed'
-          msbuild R:\third_party\SteamKit\Resources\NetHook2\NetHook2.sln /m:1 /p:Configuration=Release /p:Platform=x64 /p:CL_MPCount=1 "/p:VcpkgInstalledDir=$shortVcpkgInstall"
-          $nativeDll = "R:\third_party\SteamKit\Resources\NetHook2\x64\Release\NetHook2.dll"
+          # Map the NetHook2 repository subtree itself, not the workspace root.
+          # This shortens the vcpkg build path by another ~45 characters.
+          $sourceRoot = Join-Path $env:GITHUB_WORKSPACE 'third_party\SteamKit\Resources\NetHook2'
+          if (Test-Path S:\) { subst S: /d }
+          subst S: "$sourceRoot"
+          if ($LASTEXITCODE -ne 0) { throw "Failed to map NetHook2 source to S:" }
+          Set-Location S:\
+          New-Item -ItemType Directory -Force S:\build\vcpkg-triplets | Out-Null
+          Copy-Item "$env:GITHUB_WORKSPACE\build\vcpkg-triplets\*" S:\build\vcpkg-triplets -Recurse -Force
+          $env:VCPKG_OVERLAY_TRIPLETS = 'S:\build\vcpkg-triplets'
+          $shortVcpkgInstall = 'S:\vcpkg_installed'
+          msbuild S:\NetHook2.sln /m:1 /p:Configuration=Release /p:Platform=x64 /p:CL_MPCount=1 "/p:VcpkgInstalledDir=$shortVcpkgInstall"
+          if ($LASTEXITCODE -ne 0) { throw "NetHook2 MSBuild failed with exit code $LASTEXITCODE" }
+          $nativeDll = "S:\x64\Release\NetHook2.dll"
           if (!(Test-Path $nativeDll)) {
-            Get-ChildItem third_party/SteamKit/Resources/NetHook2 -Filter NetHook2.dll -Recurse | Select-Object FullName
+            Get-ChildItem S:\ -Filter NetHook2.dll -Recurse | Select-Object FullName
             throw "NetHook2.dll was not produced at expected path: $nativeDll"
           }
-          New-Item -ItemType Directory -Force R:\DotaLobbyOverlay\artifacts | Out-Null
-          Copy-Item $nativeDll R:\DotaLobbyOverlay\artifacts\NetHook2.dll -Force
+          $artifactDir = Join-Path $env:GITHUB_WORKSPACE 'DotaLobbyOverlay\artifacts'
+          New-Item -ItemType Directory -Force $artifactDir | Out-Null
+          Copy-Item $nativeDll (Join-Path $artifactDir 'NetHook2.dll') -Force
+          subst S: /d
 
       - name: Publish self-contained EXE
         shell: pwsh

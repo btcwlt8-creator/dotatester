@@ -16,6 +16,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
+    env:
+      VCPKG_MAX_CONCURRENCY: 2
     steps:
       - name: Checkout overlay
         uses: actions/checkout@v4
@@ -41,7 +43,7 @@ jobs:
       - name: Build NetHook2 x64
         shell: pwsh
         run: |
-          msbuild third_party/SteamKit/Resources/NetHook2/NetHook2.sln /m /p:Configuration=Release /p:Platform=x64
+          msbuild third_party/SteamKit/Resources/NetHook2/NetHook2.sln /m:1 /p:Configuration=Release /p:Platform=x64
           $nativeDll = "third_party/SteamKit/Resources/NetHook2/x64/Release/NetHook2.dll"
           if (!(Test-Path $nativeDll)) {
             Get-ChildItem third_party/SteamKit/Resources/NetHook2 -Filter NetHook2.dll -Recurse | Select-Object FullName

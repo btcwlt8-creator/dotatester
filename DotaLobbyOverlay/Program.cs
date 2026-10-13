@@ -1,7 +1,8 @@
+using System.ComponentModel;
+using System.Diagnostics;
 using System.Drawing;
-using System.IO.Pipes;
+using System.Runtime.InteropServices;
 using System.Text;
-using System.Text.Json;
 using System.Windows.Forms;
 
 namespace DotaLobbyOverlay;
@@ -9,7 +10,7 @@ namespace DotaLobbyOverlay;
 internal static class Program
 {
     [STAThread]
-    static void Main()
+    private static void Main()
     {
         ApplicationConfiguration.Initialize();
         Application.Run(new OverlayForm());
@@ -18,12 +19,15 @@ internal static class Program
 
 internal sealed class OverlayForm : Form
 {
-    private const string PipeName = "DotaLobbyOverlay.LiveRoster";
+    private const int WmCopyData = 0x004A;
+    private const long CaptureTag = 0x44524F53;
+    private const string NativeResource = "DotaLobbyOverlay.NetHook2.dll";
+
     private readonly Label status = new();
     private readonly Label subtitle = new();
     private readonly FlowLayoutPanel teams = new();
     private readonly Button hideButton = new();
-    private CancellationTokenSource? listenerCts;
+    private bool injectionAttempted;
 
     public OverlayForm()
     {
@@ -45,12 +49,12 @@ internal sealed class OverlayForm : Form
 
         var header = new Panel { Dock = DockStyle.Fill };
         header.Controls.Add(new Label { Text = "DOTA 2  /  LOBBY RADAR", AutoSize = true, Location = new Point(0, 0), Font = new Font("Segoe UI Semibold", 19, FontStyle.Bold), ForeColor = Color.FromArgb(241, 245, 253) });
-        subtitle.Text = "Список игроков обрабатывается в памяти — файлы дампов не создаются этой программой.";
+        subtitle.Text = "Захват NetHook встроен · пакеты обрабатываются в памяти";
         subtitle.AutoSize = true; subtitle.Location = new Point(2, 42); subtitle.ForeColor = Color.FromArgb(151, 163, 183);
         header.Controls.Add(subtitle);
         root.Controls.Add(header, 0, 0);
 
-        status.Text = "●  Ожидаю данные от интеграции NetHookAnalyzer2…";
+        status.Text = "●  Подготовка встроенного NetHook…";
         status.Dock = DockStyle.Fill; status.TextAlign = ContentAlignment.MiddleLeft;
         status.ForeColor = Color.FromArgb(247, 190, 91);
         root.Controls.Add(status, 0, 1);
@@ -68,8 +72,7 @@ internal sealed class OverlayForm : Form
         root.Controls.Add(footer, 0, 3);
 
         RenderWaiting();
-        Shown += (_, _) => StartListener();
-        FormClosed += (_, _) => { listenerCts?.Cancel(); listenerCts?.Dispose(); };
+        Shown += (_, _) => BeginInvoke(new Action(StartCapture));
     }
 
     private static void StyleButton(Button b)
@@ -83,101 +86,295 @@ internal sealed class OverlayForm : Form
     {
         teams.Controls.Clear();
         teams.Controls.Add(new Label {
-            Text = "Окно готово. После интеграции с NetHookAnalyzer2 список появится автоматически, без сохранения .bin-дампов на диск.",
+            Text = "Запусти Steam и Dota 2. Приложение подключит встроенный NetHook к Steam и будет искать обновление состава лобби.",
             AutoSize = false, Width = Math.Max(400, teams.ClientSize.Width - 40), Height = 90,
             ForeColor = Color.FromArgb(151, 163, 183), Padding = new Padding(16),
             BackColor = Color.FromArgb(28, 34, 47), Margin = new Padding(8)
         });
         teams.Controls.Add(new Label {
-            Text = "Важно: этот EXE не подключается к игре сам. Он принимает roster в памяти от адаптера NetHookAnalyzer2 через локальный named pipe.",
-            AutoSize = false, Width = Math.Max(400, teams.ClientSize.Width - 40), Height = 76,
-            ForeColor = Color.FromArgb(247, 190, 91), Padding = new Padding(16),
-            BackColor = Color.FromArgb(43, 37, 26), Margin = new Padding(8)
+            Text = "Сетевые сообщения передаются прямо в это окно через WM_COPYDATA. Отдельный bridge и named pipe не используются; .bin-дампы не создаются.",
+            AutoSize = false, Width = Math.Max(400, teams.ClientSize.Width - 40), Height = 88,
+            ForeColor = Color.FromArgb(105, 220, 165), Padding = new Padding(16),
+            BackColor = Color.FromArgb(25, 43, 38), Margin = new Padding(8)
         });
     }
 
-    private void StartListener()
+    private void StartCapture()
     {
-        listenerCts = new CancellationTokenSource();
-        _ = Task.Run(() => ListenLoop(listenerCts.Token));
-    }
+        if (injectionAttempted) return;
+        injectionAttempted = true;
 
-    private async Task ListenLoop(CancellationToken token)
-    {
-        while (!token.IsCancellationRequested)
+        try
         {
-            try
+            var resource = typeof(OverlayForm).Assembly.GetManifestResourceStream(NativeResource);
+            if (resource is null)
             {
-                await using var pipe = new NamedPipeServerStream(PipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous);
-                await pipe.WaitForConnectionAsync(token);
-                using var reader = new StreamReader(pipe, new UTF8Encoding(false), false, 4096, leaveOpen: true);
-                var line = await reader.ReadLineAsync(token);
-                if (string.IsNullOrWhiteSpace(line)) continue;
-                var roster = JsonSerializer.Deserialize<RosterMessage>(line, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
-                if (roster?.Players is { Count: >= 2 })
-                    BeginInvoke(new Action(() => ShowRoster(roster)));
+                SetStatus("●  Встроенный NetHook отсутствует в этой сборке", Color.FromArgb(255, 115, 115));
+                subtitle.Text = "Нужна сборка с нативным компонентом NetHook2";
+                return;
             }
-            catch (OperationCanceledException) { break; }
-            catch (IOException) { await Task.Delay(200, token).ContinueWith(_ => { }); }
-            catch (JsonException) { SetStatus("●  Получено некорректное сообщение", Color.FromArgb(255, 115, 115)); }
-            catch (ObjectDisposedException) { break; }
+
+            string folder = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DotaLobbyOverlay");
+            Directory.CreateDirectory(folder);
+            string dllPath = Path.Combine(folder, "NetHook2.dll");
+            using (resource)
+            using (var output = new FileStream(dllPath, FileMode.Create, FileAccess.Write, FileShare.Read))
+                resource.CopyTo(output);
+
+            IntPtr module = NativeMethods.LoadLibrary(dllPath);
+            if (module == IntPtr.Zero)
+            {
+                SetStatus("●  Не удалось загрузить NetHook2.dll", Color.FromArgb(255, 115, 115));
+                return;
+            }
+
+            IntPtr export = NativeMethods.GetProcAddress(module, "Inject");
+            if (export == IntPtr.Zero)
+            {
+                SetStatus("●  В NetHook2.dll не найден экспорт Inject", Color.FromArgb(255, 115, 115));
+                return;
+            }
+
+            var inject = Marshal.GetDelegateForFunctionPointer<InjectDelegate>(export);
+            inject(Handle, module, string.Empty, 0);
+            SetStatus("●  Команда подключения NetHook отправлена. Ожидаю состав лобби…", Color.FromArgb(247, 190, 91));
+        }
+        catch (Win32Exception ex)
+        {
+            SetStatus($"●  Ошибка Windows: {ex.Message}", Color.FromArgb(255, 115, 115));
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"●  Не удалось запустить NetHook: {ex.Message}", Color.FromArgb(255, 115, 115));
         }
     }
 
-    private void ShowRoster(RosterMessage roster)
+    protected override void WndProc(ref Message m)
     {
-        teams.Controls.Clear();
-        // Preserve the packet's player order: in the supplied capture the first five
-        // entries are one side and the next five are the other side.
-        var ordered = roster.Players!.ToList();
-        if (ordered.Count >= 10)
+        if (m.Msg == WmCopyData && m.LParam != IntPtr.Zero)
         {
-            AddTeam("КОМАНДА 1", ordered.Take(5).ToList(), Color.FromArgb(27, 42, 60), roster.MyAccountId);
-            AddTeam("КОМАНДА 2", ordered.Skip(5).Take(5).ToList(), Color.FromArgb(49, 32, 37), roster.MyAccountId);
-            if (ordered.Count > 10)
-                AddTeam("ДРУГИЕ ЗАПИСИ", ordered.Skip(10).ToList(), Color.FromArgb(30, 36, 49), roster.MyAccountId);
+            var copy = Marshal.PtrToStructure<CopyDataStruct>(m.LParam);
+            if (copy.DataTag == new IntPtr(CaptureTag) && copy.ByteCount > 0 && copy.ByteCount <= 1_048_576 && copy.Data != IntPtr.Zero)
+            {
+                var bytes = new byte[copy.ByteCount];
+                Marshal.Copy(copy.Data, bytes, 0, bytes.Length);
+                if (DotaPacketParser.TryReadRoster(bytes, out var names))
+                {
+                    BeginInvoke(new Action(() => ShowRoster(names)));
+                    m.Result = new IntPtr(1);
+                    return;
+                }
+            }
+        }
+        base.WndProc(ref m);
+    }
+
+    private void ShowRoster(IReadOnlyList<string> names)
+    {
+        if (names.Count < 2) return;
+        teams.Controls.Clear();
+        if (names.Count >= 10)
+        {
+            AddTeam("КОМАНДА 1", names.Take(5).ToList(), Color.FromArgb(27, 42, 60), Color.FromArgb(122, 187, 255));
+            AddTeam("КОМАНДА 2", names.Skip(5).Take(5).ToList(), Color.FromArgb(49, 32, 37), Color.FromArgb(255, 145, 132));
         }
         else
         {
-            teams.Controls.Add(new Label { Text = "Пока получено меньше 10 записей — показываю список без разделения на две пятёрки.", AutoSize = true, ForeColor = Color.FromArgb(247, 190, 91), Margin = new Padding(10) });
-            AddTeam("ИГРОКИ ИЗ ПАКЕТА", ordered, Color.FromArgb(30, 36, 49), roster.MyAccountId);
+            teams.Controls.Add(new Label { Text = $"Получено записей: {names.Count}. Разделение на две пятёрки появится при наличии 10 игроков.", AutoSize = true, ForeColor = Color.FromArgb(247, 190, 91), Margin = new Padding(10) });
+            AddTeam("ИГРОКИ ИЗ ЛОББИ", names.ToList(), Color.FromArgb(30, 36, 49), Color.FromArgb(192, 203, 223));
         }
-        var selfFound = !string.IsNullOrWhiteSpace(roster.MyAccountId) && ordered.Any(p => !string.IsNullOrWhiteSpace(p.AccountId) && p.AccountId == roster.MyAccountId);
-        subtitle.Text = selfFound ? "Ваш аккаунт отмечен зелёной меткой · обработка в памяти" : "Игроки получены · свой аккаунт пока не сопоставлен";
-        SetStatus($"●  Найдено игроков: {ordered.Count}", Color.FromArgb(105, 220, 165));
-        TopMost = true; WindowState = FormWindowState.Normal; Show(); Activate(); BringToFront(); TopMost = true;
+
+        subtitle.Text = "Состав получен из GC-пакета · обработка в оперативной памяти";
+        SetStatus($"●  Найдено игроков: {names.Count}", Color.FromArgb(105, 220, 165));
+        TopMost = true;
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        Show();
+        Activate();
+        BringToFront();
     }
 
-    private void AddTeam(string title, List<PlayerInfo> players, Color cardColor, string? myAccountId)
+    private void AddTeam(string title, List<string> players, Color cardColor, Color accent)
     {
-        teams.Controls.Add(new Label { Text = title, AutoSize = false, Width = Math.Max(400, teams.ClientSize.Width - 55), Height = 34, ForeColor = title.Contains("1") ? Color.FromArgb(122, 187, 255) : Color.FromArgb(255, 145, 132), Font = new Font("Segoe UI Semibold", 12, FontStyle.Bold), Margin = new Padding(10, 10, 10, 2), TextAlign = ContentAlignment.MiddleLeft });
+        teams.Controls.Add(new Label { Text = title, AutoSize = false, Width = Math.Max(400, teams.ClientSize.Width - 55), Height = 34, ForeColor = accent, Font = new Font("Segoe UI Semibold", 12, FontStyle.Bold), Margin = new Padding(10, 10, 10, 2), TextAlign = ContentAlignment.MiddleLeft });
         int slot = 1;
-        foreach (var player in players)
+        foreach (string player in players)
         {
-            bool isMe = !string.IsNullOrWhiteSpace(myAccountId) && !string.IsNullOrWhiteSpace(player.AccountId) && player.AccountId == myAccountId;
-            var card = new Panel { Width = Math.Max(400, teams.ClientSize.Width - 50), Height = 52, BackColor = isMe ? Color.FromArgb(31, 65, 53) : cardColor, Margin = new Padding(8, 3, 8, 3) };
+            var card = new Panel { Width = Math.Max(400, teams.ClientSize.Width - 50), Height = 52, BackColor = cardColor, Margin = new Padding(8, 3, 8, 3) };
             card.Controls.Add(new Label { Text = $"{slot:00}", AutoSize = true, Location = new Point(12, 16), ForeColor = Color.FromArgb(139, 153, 180), Font = new Font("Segoe UI Semibold", 9, FontStyle.Bold) });
-            card.Controls.Add(new Label { Text = player.Name ?? "(без ника)", AutoSize = false, Location = new Point(56, 7), Size = new Size(card.Width - 160, 38), ForeColor = Color.FromArgb(239, 243, 250), Font = new Font("Segoe UI Semibold", 11, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true });
-            if (isMe) card.Controls.Add(new Label { Text = "ЭТО ВЫ", AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(card.Width - 88, 17), ForeColor = Color.FromArgb(105, 220, 165), Font = new Font("Segoe UI Semibold", 8.5f, FontStyle.Bold) });
+            card.Controls.Add(new Label { Text = player, AutoSize = false, Location = new Point(56, 7), Size = new Size(card.Width - 80, 38), ForeColor = Color.FromArgb(239, 243, 250), Font = new Font("Segoe UI Semibold", 11, FontStyle.Bold), TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true });
             teams.Controls.Add(card); slot++;
         }
     }
 
     private void SetStatus(string text, Color color)
     {
+        if (InvokeRequired) { BeginInvoke(new Action(() => SetStatus(text, color))); return; }
         status.Text = text; status.ForeColor = color;
+    }
+
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    private delegate void InjectDelegate(IntPtr window, IntPtr instance, [MarshalAs(UnmanagedType.LPStr)] string commandLine, int showCommand);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CopyDataStruct
+    {
+        public IntPtr DataTag;
+        public int ByteCount;
+        public IntPtr Data;
+    }
+
+    private static class NativeMethods
+    {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr LoadLibrary(string path);
+        [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+        public static extern IntPtr GetProcAddress(IntPtr module, string name);
     }
 }
 
-internal sealed class RosterMessage
+internal static class DotaPacketParser
 {
-    public List<PlayerInfo>? Players { get; set; }
-    public string? MyAccountId { get; set; }
-}
-internal sealed class PlayerInfo
-{
-    public string? Name { get; set; }
-    public int Team { get; set; } = -1;
-    public int Slot { get; set; }
-    public string? AccountId { get; set; }
+    private const uint ClientFromGc = 5453;
+    private const ulong StaticLobbyType = 2014;
+
+    public static bool TryReadRoster(byte[] packet, out IReadOnlyList<string> names)
+    {
+        names = Array.Empty<string>();
+        try
+        {
+            if (packet.Length < 8) return false;
+            uint emsg = BitConverter.ToUInt32(packet, 0) & 0x7fffffff;
+            if ((emsg & 0xffff) != ClientFromGc) return false;
+
+            int headerLength = BitConverter.ToInt32(packet, 4);
+            if (headerLength < 0 || headerLength > packet.Length - 8) return false;
+            var body = packet.AsSpan(8 + headerLength);
+            byte[]? gcPayload = null;
+            uint appId = 0;
+            foreach (var field in ProtoFields(body))
+            {
+                if (field.Number == 1 && field.Wire == 0) appId = (uint)field.Varint;
+                else if (field.Number == 3 && field.Wire == 2) gcPayload = field.Bytes;
+            }
+            if (appId != 570 || gcPayload is null || gcPayload.Length < 8) return false;
+
+            uint innerType = BitConverter.ToUInt32(gcPayload, 0) & 0x7fffffff;
+            int innerHeader = BitConverter.ToInt32(gcPayload, 4);
+            if (innerHeader < 0 || innerHeader > gcPayload.Length - 8) return false;
+            var innerBody = gcPayload.AsSpan(8 + innerHeader);
+            if (innerType == 26 && TryReadUpdateMultiple(innerBody, out var updateNames))
+            {
+                names = updateNames;
+                return names.Count >= 2;
+            }
+            return false;
+        }
+        catch (Exception ex) when (ex is ArgumentException or InvalidDataException or OverflowException)
+        {
+            return false;
+        }
+    }
+
+    private static bool TryReadUpdateMultiple(ReadOnlySpan<byte> body, out IReadOnlyList<string> names)
+    {
+        names = Array.Empty<string>();
+        foreach (var field in ProtoFields(body))
+        {
+            if ((field.Number != 1 && field.Number != 2) || field.Wire != 2) continue;
+            foreach (var single in ProtoFields(field.Bytes))
+            {
+                if (single.Number != 2 || single.Wire != 2) continue;
+                ulong type = 0;
+                byte[]? objectData = null;
+                foreach (var item in ProtoFields(single.Bytes))
+                {
+                    if (item.Number == 1 && item.Wire == 0) type = item.Varint;
+                    else if (item.Number == 2 && item.Wire == 2) objectData = item.Bytes;
+                }
+                if (type == StaticLobbyType && objectData is not null && TryReadStaticLobby(objectData, out var found))
+                {
+                    if (found.Count >= 2) names = found;
+                }
+            }
+        }
+        return names.Count >= 2;
+    }
+
+    private static bool TryReadStaticLobby(byte[] objectData, out IReadOnlyList<string> names)
+    {
+        var result = new List<string>();
+        foreach (var field in ProtoFields(objectData))
+        {
+            if (field.Number != 1 || field.Wire != 2) continue;
+            foreach (var memberField in ProtoFields(field.Bytes))
+            {
+                if (memberField.Number == 1 && memberField.Wire == 2)
+                {
+                    string name = Encoding.UTF8.GetString(memberField.Bytes).Trim();
+                    if (!string.IsNullOrWhiteSpace(name) && !result.Contains(name, StringComparer.Ordinal))
+                        result.Add(name);
+                }
+            }
+        }
+        names = result;
+        return result.Count >= 2;
+    }
+
+    private readonly record struct ProtoField(int Number, int Wire, ulong Varint, byte[] Bytes);
+
+    private static IEnumerable<ProtoField> ProtoFields(ReadOnlySpan<byte> source)
+    {
+        int offset = 0;
+        while (offset < source.Length)
+        {
+            ulong key = ReadVarint(source, ref offset);
+            int number = checked((int)(key >> 3));
+            int wire = (int)(key & 7);
+            if (number == 0) throw new InvalidDataException("Invalid protobuf field.");
+            switch (wire)
+            {
+                case 0:
+                    yield return new ProtoField(number, wire, ReadVarint(source, ref offset), Array.Empty<byte>());
+                    break;
+                case 1:
+                    Ensure(source, offset, 8); offset += 8;
+                    yield return new ProtoField(number, wire, 0, Array.Empty<byte>());
+                    break;
+                case 2:
+                    ulong length = ReadVarint(source, ref offset);
+                    if (length > int.MaxValue) throw new InvalidDataException("Field too large.");
+                    int count = (int)length;
+                    Ensure(source, offset, count);
+                    yield return new ProtoField(number, wire, 0, source.Slice(offset, count).ToArray());
+                    offset += count;
+                    break;
+                case 5:
+                    Ensure(source, offset, 4); offset += 4;
+                    yield return new ProtoField(number, wire, 0, Array.Empty<byte>());
+                    break;
+                default:
+                    throw new InvalidDataException("Unsupported protobuf wire type.");
+            }
+        }
+    }
+
+    private static ulong ReadVarint(ReadOnlySpan<byte> source, ref int offset)
+    {
+        ulong value = 0;
+        int shift = 0;
+        while (offset < source.Length && shift < 64)
+        {
+            byte b = source[offset++];
+            value |= (ulong)(b & 0x7f) << shift;
+            if ((b & 0x80) == 0) return value;
+            shift += 7;
+        }
+        throw new InvalidDataException("Malformed protobuf varint.");
+    }
+
+    private static void Ensure(ReadOnlySpan<byte> source, int offset, int count)
+    {
+        if (count < 0 || offset < 0 || offset > source.Length - count)
+            throw new InvalidDataException("Truncated protobuf field.");
+    }
 }

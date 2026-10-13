@@ -10,6 +10,10 @@ on:
       - 'build/**'
       - '.github/workflows/build-embedded.yml'
 
+concurrency:
+  group: dota-lobby-overlay-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

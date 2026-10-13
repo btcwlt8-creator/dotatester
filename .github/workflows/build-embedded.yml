@@ -59,17 +59,21 @@ jobs:
       - name: Build NetHook2 x64
         shell: pwsh
         run: |
-          # Keep vcpkg's build tree short: MSVC C1083 with an empty generated filename is caused by Windows MAX_PATH.
-          $env:VCPKG_OVERLAY_TRIPLETS = (Join-Path $env:GITHUB_WORKSPACE 'build/vcpkg-triplets')
-          $shortVcpkgInstall = Join-Path $env:RUNNER_TEMP 'vcpkg-installed'
-          msbuild third_party/SteamKit/Resources/NetHook2/NetHook2.sln /m:1 /p:Configuration=Release /p:Platform=x64 /p:CL_MPCount=1 "/p:VcpkgInstalledDir=$shortVcpkgInstall"
-          $nativeDll = "third_party/SteamKit/Resources/NetHook2/x64/Release/NetHook2.dll"
+          # Build from a SUBST drive so MSVC/vcpkg/CMake never see the long GitHub workspace path.
+          if (Test-Path R:\) { subst R: /d }
+          subst R: $env:GITHUB_WORKSPACE
+          if ($LASTEXITCODE -ne 0) { throw "Failed to map workspace to R:" }
+          Set-Location R:\
+          $env:VCPKG_OVERLAY_TRIPLETS = 'R:\build\vcpkg-triplets'
+          $shortVcpkgInstall = 'R:\vcpkg_installed'
+          msbuild R:\third_party\SteamKit\Resources\NetHook2\NetHook2.sln /m:1 /p:Configuration=Release /p:Platform=x64 /p:CL_MPCount=1 "/p:VcpkgInstalledDir=$shortVcpkgInstall"
+          $nativeDll = "R:\third_party\SteamKit\Resources\NetHook2\x64\Release\NetHook2.dll"
           if (!(Test-Path $nativeDll)) {
             Get-ChildItem third_party/SteamKit/Resources/NetHook2 -Filter NetHook2.dll -Recurse | Select-Object FullName
             throw "NetHook2.dll was not produced at expected path: $nativeDll"
           }
-          New-Item -ItemType Directory -Force DotaLobbyOverlay/artifacts | Out-Null
-          Copy-Item $nativeDll DotaLobbyOverlay/artifacts/NetHook2.dll -Force
+          New-Item -ItemType Directory -Force R:\DotaLobbyOverlay\artifacts | Out-Null
+          Copy-Item $nativeDll R:\DotaLobbyOverlay\artifacts\NetHook2.dll -Force
 
       - name: Publish self-contained EXE
         shell: pwsh

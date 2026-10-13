@@ -322,8 +322,9 @@ internal static class DotaPacketParser
 
     private readonly record struct ProtoField(int Number, int Wire, ulong Varint, byte[] Bytes);
 
-    private static IEnumerable<ProtoField> ProtoFields(ReadOnlySpan<byte> source)
+    private static List<ProtoField> ProtoFields(ReadOnlySpan<byte> source)
     {
+        var result = new List<ProtoField>();
         int offset = 0;
         while (offset < source.Length)
         {
@@ -334,18 +335,18 @@ internal static class DotaPacketParser
             switch (wire)
             {
                 case 0:
-                    yield return new ProtoField(number, wire, ReadVarint(source, ref offset), Array.Empty<byte>());
+                    result.Add(new ProtoField(number, wire, ReadVarint(source, ref offset), Array.Empty<byte>()));
                     break;
                 case 1:
                     Ensure(source, offset, 8); offset += 8;
-                    yield return new ProtoField(number, wire, 0, Array.Empty<byte>());
+                    result.Add(new ProtoField(number, wire, 0, Array.Empty<byte>()));
                     break;
                 case 2:
                     ulong length = ReadVarint(source, ref offset);
                     if (length > int.MaxValue) throw new InvalidDataException("Field too large.");
                     int count = (int)length;
                     Ensure(source, offset, count);
-                    yield return new ProtoField(number, wire, 0, source.Slice(offset, count).ToArray());
+                    result.Add(new ProtoField(number, wire, 0, source.Slice(offset, count).ToArray()));
                     offset += count;
                     break;
                 case 5:
@@ -356,6 +357,7 @@ internal static class DotaPacketParser
                     throw new InvalidDataException("Unsupported protobuf wire type.");
             }
         }
+        return result;
     }
 
     private static ulong ReadVarint(ReadOnlySpan<byte> source, ref int offset)

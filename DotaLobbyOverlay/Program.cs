@@ -136,7 +136,7 @@ internal sealed class OverlayForm : Form
             }
 
             var inject = Marshal.GetDelegateForFunctionPointer<InjectDelegate>(export);
-            inject(Handle, module, string.Empty, 0);
+            inject(Handle, module, $"window={Handle.ToInt64()}", 0);
             SetStatus("●  Команда подключения NetHook отправлена. Ожидаю состав лобби…", Color.FromArgb(247, 190, 91));
         }
         catch (Win32Exception ex)

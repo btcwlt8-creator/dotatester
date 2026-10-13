@@ -121,23 +121,16 @@ internal sealed class OverlayForm : Form
             using (var output = new FileStream(dllPath, FileMode.Create, FileAccess.Write, FileShare.Read))
                 resource.CopyTo(output);
 
-            IntPtr module = NativeMethods.LoadLibrary(dllPath);
-            if (module == IntPtr.Zero)
+            var startInfo = new ProcessStartInfo
             {
-                SetStatus("●  Не удалось загрузить NetHook2.dll", Color.FromArgb(255, 115, 115));
-                return;
-            }
-
-            IntPtr export = NativeMethods.GetProcAddress(module, "Inject");
-            if (export == IntPtr.Zero)
-            {
-                SetStatus("●  В NetHook2.dll не найден экспорт Inject", Color.FromArgb(255, 115, 115));
-                return;
-            }
-
-            var inject = Marshal.GetDelegateForFunctionPointer<InjectDelegate>(export);
-            inject(Handle, module, $"window={Handle.ToInt64()}", 0);
-            SetStatus("●  Команда подключения NetHook отправлена. Ожидаю состав лобби…", Color.FromArgb(247, 190, 91));
+                FileName = Path.Combine(Environment.SystemDirectory, "rundll32.exe"),
+                Arguments = $"\\"{dllPath}\\",Inject window={Handle.ToInt64()}",
+                UseShellExecute = true,
+                Verb = "runas",
+                WindowStyle = ProcessWindowStyle.Hidden
+            };
+            Process.Start(startInfo);
+            SetStatus("●  NetHook запускается с правами администратора. Ожидаю состав лобби…", Color.FromArgb(247, 190, 91));
         }
         catch (Win32Exception ex)
         {
@@ -212,23 +205,12 @@ internal sealed class OverlayForm : Form
         status.Text = text; status.ForeColor = color;
     }
 
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-    private delegate void InjectDelegate(IntPtr window, IntPtr instance, [MarshalAs(UnmanagedType.LPStr)] string commandLine, int showCommand);
-
     [StructLayout(LayoutKind.Sequential)]
     private struct CopyDataStruct
     {
         public IntPtr DataTag;
         public int ByteCount;
         public IntPtr Data;
-    }
-
-    private static class NativeMethods
-    {
-        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-        public static extern IntPtr LoadLibrary(string path);
-        [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
-        public static extern IntPtr GetProcAddress(IntPtr module, string name);
     }
 }
 

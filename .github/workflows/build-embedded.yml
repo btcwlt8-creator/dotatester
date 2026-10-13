@@ -1,0 +1,64 @@
+name: Build Dota Lobby Overlay (embedded NetHook)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/embedded-memory-capture
+    paths:
+      - 'DotaLobbyOverlay/**'
+      - 'build/**'
+      - '.github/workflows/build-embedded.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout overlay
+        uses: actions/checkout@v4
+
+      - name: Checkout NetHook2 source
+        uses: actions/checkout@v4
+        with:
+          repository: SteamRE/SteamKit
+          path: third_party/SteamKit
+
+      - name: Patch NetHook2 for in-memory delivery
+        shell: pwsh
+        run: ./build/patch-nethook-memory.ps1 -SteamKitRoot ./third_party/SteamKit
+
+      - name: Prepare native dependencies
+        shell: pwsh
+        working-directory: third_party/SteamKit/Resources/NetHook2
+        run: ./SetupDependencies.ps1
+
+      - name: Build NetHook2 x64
+        shell: pwsh
+        run: |
+          msbuild third_party/SteamKit/Resources/NetHook2/NetHook2.sln /m /p:Configuration=Release /p:Platform=x64
+          $nativeDll = "third_party/SteamKit/Resources/NetHook2/x64/Release/NetHook2.dll"
+          if (!(Test-Path $nativeDll)) {
+            Get-ChildItem third_party/SteamKit/Resources/NetHook2 -Filter NetHook2.dll -Recurse | Select-Object FullName
+            throw "NetHook2.dll was not produced at expected path: $nativeDll"
+          }
+          New-Item -ItemType Directory -Force DotaLobbyOverlay/artifacts | Out-Null
+          Copy-Item $nativeDll DotaLobbyOverlay/artifacts/NetHook2.dll -Force
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish self-contained EXE
+        shell: pwsh
+        run: dotnet publish DotaLobbyOverlay/DotaLobbyOverlay.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: DotaLobbyOverlay-win-x64
+          path: publish/DotaLobbyOverlay.exe
+          if-no-files-found: error

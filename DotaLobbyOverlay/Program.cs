@@ -333,7 +333,7 @@ internal static class DotaPacketParser
                     break;
                 case 5:
                     Ensure(source, offset, 4); offset += 4;
-                    yield return new ProtoField(number, wire, 0, Array.Empty<byte>());
+                    result.Add(new ProtoField(number, wire, 0, Array.Empty<byte>()));
                     break;
                 default:
                     throw new InvalidDataException("Unsupported protobuf wire type.");

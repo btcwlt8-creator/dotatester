@@ -8,6 +8,9 @@ foreach ($p in @($loggerPath, $injectorPath, $nethookPath)) { if (!(Test-Path $p
 $nl = [Environment]::NewLine
 
 $injector = [IO.File]::ReadAllText($injectorPath)
+if ($injector -notmatch '#include <string\.h>') {
+    $injector = $injector.Replace('#include <stdlib.h>', '#include <stdlib.h>' + $nl + '#include <string.h>')
+}
 if ($injector -notmatch 'DotaLobbyOverlay\.TargetWindow') {
     $injector = $injector.Replace('int FindSteamProcessID();', 'static HANDLE g_hDotaOverlayMapping = NULL;' + $nl + 'int FindSteamProcessID();')
     $needle = 'void CALLBACK Inject( HWND hWindow, HINSTANCE hInstance, LPSTR lpszCommandLine, int nCmdShow )' + $nl + '{'
@@ -20,7 +23,7 @@ void CALLBACK Inject( HWND hWindow, HINSTANCE hInstance, LPSTR lpszCommandLine, 
         char* end = nullptr;
         unsigned long long rawHwnd = _strtoui64(lpszCommandLine + 7, &end, 10);
         if (end != lpszCommandLine + 7 && *end == '\0' && rawHwnd != 0)
-            hOverlayWindow = reinterpret_cast<HWND>(static_cast<uintptr_t>(rawHwnd));
+            hOverlayWindow = reinterpret_cast<HWND>(static_cast<ULONG_PTR>(rawHwnd));
         lpszCommandLine = const_cast<char*>("");
     }
     g_hDotaOverlayMapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(HWND), "Local\\DotaLobbyOverlay.TargetWindow");

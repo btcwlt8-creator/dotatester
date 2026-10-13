@@ -59,9 +59,10 @@ jobs:
       - name: Build NetHook2 x64
         shell: pwsh
         run: |
-          # Use a Release-only overlay triplet so vcpkg does not compile the failing protobuf Debug variant.
+          # Keep vcpkg's build tree short: MSVC C1083 with an empty generated filename is caused by Windows MAX_PATH.
           $env:VCPKG_OVERLAY_TRIPLETS = (Join-Path $env:GITHUB_WORKSPACE 'build/vcpkg-triplets')
-          msbuild third_party/SteamKit/Resources/NetHook2/NetHook2.sln /m:1 /p:Configuration=Release /p:Platform=x64 /p:CL_MPCount=1
+          $shortVcpkgInstall = Join-Path $env:RUNNER_TEMP 'vcpkg-installed'
+          msbuild third_party/SteamKit/Resources/NetHook2/NetHook2.sln /m:1 /p:Configuration=Release /p:Platform=x64 /p:CL_MPCount=1 "/p:VcpkgInstalledDir=$shortVcpkgInstall"
           $nativeDll = "third_party/SteamKit/Resources/NetHook2/x64/Release/NetHook2.dll"
           if (!(Test-Path $nativeDll)) {
             Get-ChildItem third_party/SteamKit/Resources/NetHook2 -Filter NetHook2.dll -Recurse | Select-Object FullName
